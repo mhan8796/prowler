@@ -865,8 +865,8 @@ class TestGitHubProviderInstallationToken:
         session = GithubSession(
             token=INSTALLATION_TOKEN, id="", key="", installation=True
         )
-        first = self._repositories(*(["test-org"] * 100))
-        second = self._repositories("other-owner")
+        first = {**self._repositories(*(["test-org"] * 100)), "total_count": 101}
+        second = {**self._repositories("other-owner"), "total_count": 101}
 
         with patch("prowler.providers.github.github_provider.Github") as mock_github:
             mock_github.return_value.requester.requestJsonAndCheck.side_effect = [
@@ -877,6 +877,42 @@ class TestGitHubProviderInstallationToken:
             identity = GithubProvider.setup_identity(session)
 
         assert identity.installations == ["test-org", "other-owner"]
+
+    def test_setup_identity_does_not_take_a_short_page_as_the_last(self):
+        """GitHub does not promise full pages, so `total_count` decides."""
+        session = GithubSession(
+            token=INSTALLATION_TOKEN, id="", key="", installation=True
+        )
+        first = {**self._repositories("test-org"), "total_count": 2}
+        second = {**self._repositories("other-owner"), "total_count": 2}
+
+        with patch("prowler.providers.github.github_provider.Github") as mock_github:
+            mock_github.return_value.requester.requestJsonAndCheck.side_effect = [
+                ({}, first),
+                ({}, second),
+            ]
+
+            identity = GithubProvider.setup_identity(session)
+
+        assert identity.installations == ["test-org", "other-owner"]
+
+    def test_setup_identity_stops_on_an_empty_page(self):
+        """A total that grows mid-listing must not page forever."""
+        session = GithubSession(
+            token=INSTALLATION_TOKEN, id="", key="", installation=True
+        )
+        first = {**self._repositories("test-org"), "total_count": 5}
+        empty = {"total_count": 5, "repositories": []}
+
+        with patch("prowler.providers.github.github_provider.Github") as mock_github:
+            mock_github.return_value.requester.requestJsonAndCheck.side_effect = [
+                ({}, first),
+                ({}, empty),
+            ]
+
+            identity = GithubProvider.setup_identity(session)
+
+        assert identity.installations == ["test-org"]
 
     def test_setup_identity_with_a_rejected_installation_token(self):
         session = GithubSession(
@@ -908,6 +944,31 @@ class TestGitHubProviderInstallationToken:
 
             with pytest.raises(GithubInvalidProviderIdError):
                 GithubProvider.validate_provider_id(session, "someone-else")
+
+    def test_test_connection_lists_installation_repositories_once(self):
+        """The owners `setup_identity` read are reused to validate the provider ID."""
+        with (
+            patch(
+                "prowler.providers.github.github_provider.GithubProvider.setup_session",
+                return_value=GithubSession(
+                    token=INSTALLATION_TOKEN, id="", key="", installation=True
+                ),
+            ),
+            patch("prowler.providers.github.github_provider.Github") as mock_github,
+        ):
+            client = mock_github.return_value
+            client.requester.requestJsonAndCheck.return_value = (
+                {},
+                self._repositories("test-org"),
+            )
+
+            connection = GithubProvider.test_connection(
+                github_app_installation_token=INSTALLATION_TOKEN,
+                provider_id="test-org",
+            )
+
+        assert connection.is_connected is True
+        client.requester.requestJsonAndCheck.assert_called_once()
 
     def test_test_connection_with_installation_token_success(self):
         with (
