@@ -1360,4 +1360,22 @@ class TestM365PowerShellOIDC:
             return_value=credential,
         ):
             with pytest.raises(ValueError):
-                M365PowerShell.oidc_token("https://graph.microsoft.com/.default")
+                M365PowerShell.__new__(M365PowerShell).oidc_token(
+                    "https://graph.microsoft.com/.default"
+                )
+
+    def test_oidc_token_reuses_one_credential_per_session(self):
+        """So azure-identity can cache tokens across Graph, Teams and Exchange."""
+        credential = MagicMock()
+        credential.get_token.return_value.token = "header.payload.signature"
+        session = M365PowerShell.__new__(M365PowerShell)
+
+        with patch(
+            "prowler.providers.m365.m365_provider.M365Provider.oidc_credential",
+            return_value=credential,
+        ) as oidc_credential:
+            session.oidc_token("https://graph.microsoft.com/.default")
+            session.oidc_token("https://outlook.office365.com/.default")
+
+        oidc_credential.assert_called_once()
+        assert credential.get_token.call_count == 2

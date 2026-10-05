@@ -1,7 +1,7 @@
 import logging
 import os
 from os import environ
-from typing import Union
+from typing import Optional, Union
 
 from colorama import Fore, Style
 from github import Auth, Github, GithubIntegration
@@ -547,6 +547,7 @@ class GithubProvider(Provider):
         """
         g = Github(auth=Auth.Token(session.token), retry=GithubRetry(total=3))
         owners = []
+        seen = 0
         page = 1
         while True:
             _, data = g.requester.requestJsonAndCheck(
@@ -559,7 +560,11 @@ class GithubProvider(Provider):
                 login = repository.get("owner", {}).get("login")
                 if login and login not in owners:
                     owners.append(login)
-            if len(repositories) < 100:
+            seen += len(repositories)
+            # GitHub does not promise that a short page is the last one, so stop
+            # at the total it reports. An empty page also stops, so a total that
+            # changes mid-listing cannot loop forever.
+            if not repositories or seen >= data.get("total_count", 0):
                 return owners
             page += 1
 
@@ -597,6 +602,7 @@ class GithubProvider(Provider):
     def validate_provider_id(
         session: GithubSession,
         provider_id: str,
+        installation_owners: Optional[list[str]] = None,
     ) -> None:
         """
         Validate that the provider ID (username or organization) is accessible with the given credentials.
@@ -604,6 +610,8 @@ class GithubProvider(Provider):
         Args:
             session (GithubSession): The GitHub session with authentication.
             provider_id (str): The provider ID to validate (username or organization name).
+            installation_owners (list[str], optional): For an installation token, the owners
+                already read by `setup_identity`, so the repositories are not listed twice.
 
         Raises:
             GithubInvalidProviderIdError: If the provider ID is not accessible with the given credentials.
@@ -617,7 +625,9 @@ class GithubProvider(Provider):
 
             if session.token and session.installation:
                 # For a GitHub App installation token: the installation's owner
-                if provider_id in GithubProvider._installation_owners(session):
+                if installation_owners is None:
+                    installation_owners = GithubProvider._installation_owners(session)
+                if provider_id in installation_owners:
                     return
                 raise GithubInvalidProviderIdError(
                     file=os.path.basename(__file__),
@@ -740,11 +750,17 @@ class GithubProvider(Provider):
             )
 
             # Set up the identity to test the connection
-            GithubProvider.setup_identity(session)
+            identity = GithubProvider.setup_identity(session)
 
             # Validate provider ID if provided
             if provider_id:
-                GithubProvider.validate_provider_id(session, provider_id)
+                GithubProvider.validate_provider_id(
+                    session,
+                    provider_id,
+                    installation_owners=(
+                        identity.installations if session.installation else None
+                    ),
+                )
 
             return Connection(is_connected=True)
         except GithubInvalidProviderIdError as provider_id_error:

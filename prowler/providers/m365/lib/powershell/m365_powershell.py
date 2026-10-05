@@ -48,6 +48,7 @@ class M365PowerShell(PowerShellSession):
         super().__init__()
         self.tenant_identity = identity
         self.oidc = bool(getattr(credentials, "oidc", False))
+        self._oidc_credential = None
         self.init_credential(credentials)
 
     @override
@@ -167,10 +168,14 @@ class M365PowerShell(PowerShellSession):
                 '$graphToken = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantID/oauth2/v2.0/token" -Method POST -Body $graphtokenBody | Select-Object -ExpandProperty Access_Token'
             )
 
-    @staticmethod
-    def oidc_token(scope: str) -> str:
+    def oidc_token(self, scope: str) -> str:
         """
         Returns an access token for `scope`, obtained with the federated token.
+
+        One credential serves the whole session, so azure-identity can cache its
+        tokens across the Graph, Teams and Exchange requests. It uses the public
+        cloud authority, as the PowerShell connections for every other
+        authentication method do: their scopes and login URLs are public cloud.
 
         A JWT is base64url segments joined by dots, so it is safe inside a
         single-quoted PowerShell string.
@@ -184,7 +189,9 @@ class M365PowerShell(PowerShellSession):
         # Imported here: the provider module imports this one.
         from prowler.providers.m365.m365_provider import M365Provider
 
-        token = M365Provider.oidc_credential().get_token(scope).token
+        if getattr(self, "_oidc_credential", None) is None:
+            self._oidc_credential = M365Provider.oidc_credential()
+        token = self._oidc_credential.get_token(scope).token
         if not re.fullmatch(r"[A-Za-z0-9\-_.]+", token):
             raise ValueError("Unexpected characters in the access token")
         return token
